@@ -18,21 +18,6 @@ logger = logging.getLogger(SAGEMAKER_DISTRIBUTION_INFERENCE_LOGGER)
 
 
 class TornadoServer:
-    def serve(self):
-        if asyncio.iscoroutinefunction(self._handler):
-            logger.info("Starting inference server in asynchronous mode...")
-            import tornado_server.async_server as inference_server
-        else:
-            logger.info("Starting inference server in synchronous mode...")
-            import tornado_server.sync_server as inference_server
-
-        try:
-            asyncio.run(inference_server.serve(self._handler, self._environment))
-        except Exception as e:
-            raise ServerStartException(e)
-
-
-class InferenceServer(TornadoServer):
     def __init__(self):
         self._environment = Environment()
         logger.setLevel(self._environment.logging_level)
@@ -48,12 +33,26 @@ class InferenceServer(TornadoServer):
         self._handler = None
 
     def initialize(self):
+        logger.info("Initializing inference server...")
         self._install_runtime_requirements()
         self._handler = self._load_inference_handler()
 
+    def serve(self):
+        logger.info("Serving inference requests using Tornado...")
+        self.initialize()
+
+        if asyncio.iscoroutinefunction(self._handler):
+            import async_handler as inference_handler
+        else:
+            import sync_handler as inference_handler
+
+        try:
+            asyncio.run(inference_handler.handle(self._handler, self._environment))
+        except Exception as e:
+            raise ServerStartException(e)
+
     def _install_runtime_requirements(self):
         logger.info("Installing runtime requirements...")
-        
         requirements_txt = self._path_to_inference_code.joinpath(self._environment.requirements)
         if requirements_txt.is_file():
             try:
@@ -67,7 +66,6 @@ class InferenceServer(TornadoServer):
 
     def _load_inference_handler(self) -> callable:
         logger.info("Loading inference handler...")
-
         inference_module_name, handle_name = self._environment.code.split(".")
         if inference_module_name and handle_name:
             inference_module_file = f"{inference_module_name}.py"
@@ -77,7 +75,7 @@ class InferenceServer(TornadoServer):
             )
             if module_spec:
                 sys.path.insert(0, str(self._path_to_inference_code.resolve()))
-                inference_module = module_spec.loader.load_module(inference_module_file)
+                inference_module = module_spec.loader.exec_module(inference_module_file)
                 if hasattr(inference_module, handle_name):
                     handler = getattr(inference_module, handle_name)
                 else:
@@ -91,11 +89,5 @@ class InferenceServer(TornadoServer):
                     f"Inference code could not be found at `{str(self._path_to_inference_code.joinpath(inference_module_file))}`"
                 )
         raise InferenceCodeLoadException(
-            f"Inference code expected in the format of `<module>.<handler>` but was provided as {code}"
+            f"Inference code expected in the format of `<module>.<handler>` but was provided as {self._environment.code}"
         )
-
-
-if __name__ == "__main__":
-    inference_server = InferenceServer()
-    inference_server.initialize()
-    inference_server.serve()
